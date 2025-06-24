@@ -9,4 +9,4 @@ Soma is a lightweight static site generator built for simplicity and clarity. Wh
 - Single binary deployment
 
 ## Installation
-```go install github.com/yourusername/soma@latest```
+```go install github.com/floeckdev/soma@latest```

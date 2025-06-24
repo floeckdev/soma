@@ -1,4 +1,4 @@
-module soma
+module github.com/floeckdev/soma
 
 go 1.21
 
