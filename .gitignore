@@ -1,0 +1,21 @@
+# Build artifacts
+soma
+*.exe
+
+# Test site content
+content/
+static/
+public/
+
+# Go build cache
+.go-build-cache
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
