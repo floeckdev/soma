@@ -4,7 +4,7 @@
     Implementation likely unsuitable for anything serious.
 */
 
-package soma
+package utils
 
 import "core:fmt"
 import "core:strings"

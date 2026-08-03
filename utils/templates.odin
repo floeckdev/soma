@@ -1,4 +1,9 @@
-package soma
+/*
+    templates.odin
+    Default content for new sites
+*/
+
+package utils
 
 BASE_TEMPLATE :: `<!DOCTYPE html>
 <html lang="en">
@@ -52,3 +57,25 @@ CONTENT_TEMPLATE :: `{% extends "base.html" %}
 <p class="text-sm text-stone-500 mb-6"><time datetime="{{ date }}">{{ date | format_date }}</time></p>
 {{ content | safe }}
 {% endblock %}`
+
+default_templates :: proc() -> map[string]string {
+    templates := make(map[string]string, context.allocator)
+
+    templates["base.html"]     = BASE_TEMPLATE
+    templates["default.html"]  = DEFAULT_TEMPLATE
+    templates["category.html"] = CATEGORY_TEMPLATE
+    templates["content.html"]  = CONTENT_TEMPLATE  
+
+    return templates
+}
+
+default_content :: proc() -> map[string]string {
+	default_content := make(map[string]string, context.allocator)
+
+	default_content["index.md"] = "---\ntitle: \"Home\"\ntemplate: \"default\"\n---\n\n# Welcome\n\nNew soma site.\n"
+	default_content["about.md"] = "---\ntitle: \"About\"\ntemplate: \"default\"\n---\n\nAbout this site.\n"
+	default_content["blog/index.md"] = "---\ntitle: \"Blog\"\ntemplate: \"category\"\n---\n\nPosts.\n"
+	default_content["projects/index.md"] = "---\ntitle: \"Projects\"\ntemplate: \"category\"\n---\n\nThings I built.\n"
+
+	return default_content
+}
