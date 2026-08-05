@@ -3,6 +3,8 @@
 	The driver for soma, a static site generator
 */
 
+#+vet explicit-allocators
+
 package soma
 
 import "core:fmt"
@@ -91,73 +93,63 @@ init :: proc(name: string) {
 		fmt.printfln("soma (error): directory `%s` already exists", name)
 		return
 	}
+	init_alloc := context.allocator
 
-	scaffold_directories(name)
-	create_default_templates(_join_path({name, "templates"}))
-	create_default_content(name)
-	copy_default_assets(_join_path({name, "assets", "css"}))
-	copy_default_fonts(_join_path({name, "assets", "fonts"}))
-
-	fmt.printfln("soma: new instance `%s` created", name)
-	fmt.println("soma: run `soma build` then `soma serve` to get started")
-}
-
-scaffold_directories :: proc(name: string) {
+	// Scaffod directories
 	directories := []string {
 		name,
-		_join_path({name, "templates"}),
-		_join_path({name, "build"}),
-		_join_path({name, "assets"}),
-		_join_path({name, "assets", "css"}),
-		_join_path({name, "assets", "fonts"}),
-		_join_path({name, "blog"}),
-		_join_path({name, "projects"}),
+		strings.concatenate({name, "/templates"}, init_alloc),
+		strings.concatenate({name, "/build"}, init_alloc),
+		strings.concatenate({name, "/assets"}, init_alloc),
+		strings.concatenate({name, "/assets", "/css"}, init_alloc),
+		strings.concatenate({name, "/assets", "/fonts"}, init_alloc),
+		strings.concatenate({name, "/blog"}, init_alloc),
+		strings.concatenate({name, "/projects"}, init_alloc),
 	}
 	for directory in directories {
 		os.make_directory(directory)
+		fmt.printfln("dirs: %v", directory)
 	}
-}
 
-create_default_templates :: proc(templates_dir: string) {
+	// Create default templates
 	templates := utils.default_templates()
+	templates_dir, _ := filepath.join({name, "templates"}, init_alloc)
 	for file_name, contents in templates {
-		_write_text_file(_join_path({templates_dir, file_name}), contents)
+		path, _ := filepath.join({templates_dir, file_name}, init_alloc)
+		_write_text_file(path, contents)
 	}
-}
 
-create_default_content :: proc(site_path: string) {
+	// Create default content
 	content := utils.default_content()
 	for relative_path, contents in content {
-		_write_text_file(_join_path({site_path, relative_path}), contents)
+		path, _ := filepath.join({name, relative_path}, init_alloc)
+		_write_text_file(path, contents)
 	}
-}
 
-copy_default_assets :: proc(asset_path: string) {
+	// Copy default assets
+	asset_path, _ := filepath.join({name, "assets", "css"}, init_alloc)
 	ASSET_FILES := #load_directory("css")
 	for a in ASSET_FILES {
-		err := os.write_entire_file_from_bytes(_join_path({asset_path, a.name}), a.data)
+		path, _ := filepath.join({asset_path, a.name}, init_alloc)
+		err := os.write_entire_file_from_bytes(path, a.data)
 		if (err != nil) {
 			fmt.println("soma (error): Error writing asset!")
 		}
 	}
-}
 
-copy_default_fonts :: proc(font_path: string) {
+	// Copy default fonts
+	font_path, _ := filepath.join({name, "assets", "fonts"}, init_alloc)
 	FONT_FILES := #load_directory("fonts")
 	for f in FONT_FILES { 
-		err := os.write_entire_file_from_bytes(_join_path({font_path, f.name}), f.data) 
+		path, _ := filepath.join({font_path, f.name}, init_alloc)
+		err := os.write_entire_file_from_bytes(path, f.data) 
 		if (err != nil) {
 			fmt.println("soma (error): Error writing font file!")
 		}
 	}
-}
 
-_join_path :: proc(parts: []string) -> string {
-	path, err := filepath.join(parts)
-	if err != nil {
-		panic("soma: filepath.join allocation failed")
-	}
-	return path
+	fmt.printfln("soma: new instance `%s` created", name)
+	fmt.println("soma: run `soma build` then `soma serve` to get started")
 }
 
 _write_text_file :: proc(path: string, contents: string) {
@@ -177,42 +169,43 @@ _write_text_file :: proc(path: string, contents: string) {
 */
 
 build :: proc(dev_mode: bool = false) {
+	build_alloc := context.allocator
 
-	curr_dir, _ := os.getwd(context.temp_allocator)
-	defer free_all(context.temp_allocator)
-	os.remove_all("/build")
+	root_dir, _ := os.getwd(context.allocator)
+	build_dir := strings.concatenate({root_dir, "/build"}, build_alloc)
+	os.remove_all(build_dir)
 
 	// Discovery
-	discovered_content := _discover_content(curr_dir)
+	discovered_content := _discover_content(root_dir, build_alloc)
 
 	for page in discovered_content {
-		fmt.printfln("page: %s", page.info.name)
+		fmt.printfln("page: %v", page.info)
 	}
 
 }
 
-_discover_content :: proc(root_dir: string, allocator:= context.allocator) -> [dynamic]Page {
+_discover_content :: proc(root_dir: string, allocator: runtime.Allocator) -> [dynamic]Page {
 	discovered := make([dynamic]Page, allocator)
 
 	w := os.walker_create_path(root_dir)
 	defer os.walker_destroy(&w)
 	
-	// Walk the directory
 	for file in os.walker_walk(&w) {
-		// Skip dir & non-markdown files
 		if (file.type != .Regular) || (filepath.ext(file.name) != ".md"){
+			// Skip dirs & non-md files
 			continue
 		}
-		// full: /home/ofloeck/Git/soma/soma-test/projects/index.md
-
-		// join: /home/ofloeck/Git/soma/soma-test/build/index.html
-		if (strings.has_prefix(file.fullpath, _join_path({root_dir, "build"}))) {
+		if (strings.has_prefix(file.fullpath, strings.concatenate({root_dir, "/build"}, allocator))) {
+			// Skip /build
 			continue
 		}
 
+		// /home/ofloeck/Git/soma/soma-test/projects/index.md
 		parent_dir := filepath.dir(file.fullpath)
 		is_in_root := parent_dir == root_dir
 		category := "" if is_in_root else filepath.base(parent_dir)
+
+		fmt.printfln("%v, %v, %v", parent_dir, is_in_root, category)
 
 		append(&discovered, Page {
 			info = file,
@@ -273,7 +266,7 @@ markdown_append_chunk :: proc "c" (text: [^]u8, size: c.uint, userdata: rawptr) 
 }
 
 markdown_to_html :: proc(markdown_source: string) -> string {
-	builder := strings.builder_make()
+	//builder := strings.builder_make()
 	input := transmute([]u8)markdown_source
 
 	// md_html(
@@ -307,10 +300,12 @@ serve :: proc(port: int, dev: bool) {
 */
 
 clean :: proc() {
-	curr_dir, _ := os.getwd(context.temp_allocator)
-	defer free_all(context.temp_allocator)
+	clean_alloc := context.allocator
+	defer free_all(clean_alloc)
 
-	path := _join_path({curr_dir, "/build"})
+	curr_dir, _ := os.getwd(clean_alloc)
+
+	path := strings.concatenate({curr_dir, "/build"}, clean_alloc)
 
 	err := os.remove_all(path)
 	if (err != nil) {
