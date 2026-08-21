@@ -8,14 +8,18 @@ This tool allows users to quickly spin up a static site with minimal fuss and co
 
 ## Installation
 
+### Dependencies
+
+- **[Odin](https://github.com/odin-lang/odin)** - The language and build system
+- **[md4c](https://github.com/mity/md4c)** - C library for Markdown parsing
+
 ### macOS / Linux
+
+The build script will move the `soma` binary to  `~/.local/bin/soma` after building. Make sure that this is on your path. 
 
 ```bash
 # Build
-odin build . -out:soma
-
-# Move binary to a directory on your PATH
-sudo mv soma /usr/local/bin/soma
+./build.sh
 
 # Verify
 soma --help

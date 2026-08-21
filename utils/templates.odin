@@ -1,6 +1,6 @@
 /*
-    templates.odin
-    Default content for new sites
+    File: utils/templates.odin
+    Default content for new sites.
 */
 
 package utils
