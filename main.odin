@@ -33,23 +33,19 @@ foreign md4c_html {
 MARKDOWN_PARSER_FLAGS :: c.uint(0x0040 | 0x0004)
 
 Page :: struct {
-	file_path: string, // home/user/my-site/index.md		
-	category: string,  // projects or ""
-	is_index: bool	   // true or false
+	file_path: string, 					 // home/user/my-site/index.md		
+	category: string,  					 // projects, ""
+	is_index: bool,	   					 // true, false
+	frontmatter: map[string]Frontmatter, // title: "test", rank: 1, tags: [code, stuff]
+	content: string						 // HTML parsed of raw content
 }
 
-Parsed_Page :: struct {
-    source:   Page,								
-    frontmatter: map[string]Frontmatter_Value,	// title: "test", rank: 1, tags: [code, stuff]
-    body: string								// "body of post"
+Render_Context :: struct {
+    page: Page,
+	items: []Page
 }
 
-Rendered_Page :: struct {
-    output_path: string,
-    html:        string,
-}
-
-Frontmatter_Value :: union {
+Frontmatter :: union {
 	string,
 	[]string,
 	int,
@@ -212,18 +208,21 @@ build :: proc(dev_mode: bool = false) {
 	os.remove_all(build_dir)
 
 	pages := _discover_content(root_dir, build_alloc)
-	parsed_pages := _parse_all(pages, build_alloc)
-    rendered_pages := _render_all(parsed_pages, build_alloc)
+    rendered_pages := _render_all(pages, build_alloc)
     _write_all(rendered_pages, build_dir, build_alloc)
 
-	for page in parsed_pages {
-		fmt.printfln("path: %s", page.source.file_path)
+	for page in pages {
+		fmt.println("----- PAGE DEBUG -----")
+		fmt.printfln("path: %s", page.file_path)
 		fmt.printfln("fm: %v", page.frontmatter)
+		fmt.printfln("content: %v", page.content)
 	}
-
-
 }
 
+/*
+	This function discovers content within the site and also validates
+	to ensure it is relevant i.e. not draft, valid frontmatter
+*/
 _discover_content :: proc(root_dir: string, allocator: runtime.Allocator) -> [dynamic]Page {
 	discovered := make([dynamic]Page, allocator)
 
@@ -250,47 +249,32 @@ _discover_content :: proc(root_dir: string, allocator: runtime.Allocator) -> [dy
 		is_in_root := parent_dir == root_dir
 		category := "" if is_in_root else filepath.base(parent_dir)
 
-		append(&discovered, Page {
-			file_path = strings.clone(file.fullpath, allocator),
-			category = strings.clone(category, allocator),
-			is_index = strings.clone(file.name, allocator) == "index.md"
-		})
-	}
-
-	return discovered
-}
-
-/*
-	Extract the frontmatter and markdown body from raw files
-*/
-_parse_all :: proc(pages: [dynamic]Page, allocator: runtime.Allocator) -> [dynamic]Parsed_Page {
-	parsed := make([dynamic]Parsed_Page, allocator)
-
-	for current_page in pages {
-		raw, _ := os.read_entire_file_from_path(current_page.file_path, allocator)
+		// Begin frontmatter & body splitting
+		raw, _ := os.read_entire_file_from_path(file.fullpath, allocator)
 		content := string(raw)
 
 		// TODO(oskar): Maybe we strings.scrub here?
 		split_content := strings.split_n(content, "---", 3, allocator)
 		if len(split_content) != 3 {
 			fmt.printfln("soma (error): invalid frontmatter in `%s`",
-						current_page.file_path)
+						 file.fullpath)
 			continue
 		}
 
-		append(&parsed, Parsed_Page {
-			source = current_page,
+		append(&discovered, Page {
+			file_path = strings.clone(file.fullpath, allocator),
+			category = strings.clone(category, allocator),
+			is_index = strings.clone(file.name, allocator) == "index.md",
 			frontmatter = _extract_frontmatter(split_content[1], allocator),
-			body = split_content[2]
+			content = _markdown_to_html(split_content[2], allocator)
 		})
-
 	}
 
-	return parsed
+	return discovered
 }
 
-_extract_frontmatter :: proc(frontmatter: string, allocator: runtime.Allocator) -> map[string]Frontmatter_Value {
-	parsed := make(map[string]Frontmatter_Value, allocator)
+_extract_frontmatter :: proc(frontmatter: string, allocator: runtime.Allocator) -> map[string]Frontmatter {
+	parsed := make(map[string]Frontmatter, allocator)
 
 	// title: "Home"\n 
 	// template: "default"\n
@@ -312,11 +296,11 @@ _extract_frontmatter :: proc(frontmatter: string, allocator: runtime.Allocator) 
 }
 
 /*
-	Where an individual frontmatter entity is parsed.
+	Where an individual frontmatter item is parsed.
 	i.e. any of "My Post", [c, c++], true, 1, 2015-09-11
-	See `Frontmatter_Value` for supported types
+	See `Frontmatter` for supported types
 */
-_parse_value :: proc(value: string, allocator: runtime.Allocator) -> Frontmatter_Value {
+_parse_value :: proc(value: string, allocator: runtime.Allocator) -> Frontmatter {
     if strings.has_prefix(value, "[") {
         inner := value[1:len(value)-1]
         items := strings.split(inner, ",", allocator)
@@ -351,9 +335,12 @@ _parse_value :: proc(value: string, allocator: runtime.Allocator) -> Frontmatter
 /*
 	Takes our parsed pages and renders as HTML
 */
-_render_all :: proc(parsed_pages: [dynamic]Parsed_Page, allocator: runtime.Allocator) -> [dynamic]Rendered_Page {
+_render_all :: proc(parsed_pages: [dynamic]Page, allocator: runtime.Allocator) -> [dynamic]Render_Context {
+	render_context := make([dynamic]Render_Context, allocator)
 
-	return nil
+
+
+	return render_context
 }
 
 _markdown_to_html :: proc(markdown_source: string, allocator: runtime.Allocator) -> string {
@@ -373,16 +360,19 @@ _markdown_to_html :: proc(markdown_source: string, allocator: runtime.Allocator)
 }
 
 _md4c_callback :: proc "c" (output: cstring, size: c.uint, userdata: rawptr) {
-    // your implementation
+	// Due to nature of foregin C we need to declare context again?
+	// TODO(oskar): research this ^
+	context = runtime.default_context()
+	builder := cast(^strings.Builder)userdata
+	chunk := string(output)
+	strings.write_string(builder, chunk[:size])
 }
 
-_write_all :: proc(rendered_pages: [dynamic]Rendered_Page, build_dir: string, allocator: runtime.Allocator) {
+_write_all :: proc(rendered_pages: [dynamic]Render_Context, build_dir: string, allocator: runtime.Allocator) {
 	// site/item.md 		-> site/build/item/index.html		// cat 0, root 0
 	// site/index.md 		-> site/build/index.html			// cat 0, root 1
 	// site/cat/index.md	-> site/build/cat/index.html		// cat 1, root 1
 	// site/cat/post.md		-> site/build/cat/post/index.html	// cat 1, root 0
-
-
 }
 
 
