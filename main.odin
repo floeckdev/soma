@@ -37,12 +37,8 @@ Page :: struct {
 	category: string,  					 // projects, ""
 	is_index: bool,	   					 // true, false
 	frontmatter: map[string]Frontmatter, // title: "test", rank: 1, tags: [code, stuff]
-	content: string						 // HTML parsed of raw content
-}
-
-Render_Context :: struct {
-    page: Page,
-	items: []Page
+	content: string,					 // HTML parsed of raw content
+	items: []Page						 // category & index pages only
 }
 
 Frontmatter :: union {
@@ -78,6 +74,9 @@ main :: proc() {
 	}
 	command := arguments[1]
 
+	defer free_all(context.allocator)
+	working_dir, _ := os.getwd(context.allocator)
+
 	switch command {
 	case "init":
 		if len(arguments) < 3 {
@@ -87,16 +86,16 @@ main :: proc() {
 		init(arguments[2])
 
 	case "build":
-		build(false)
+		build(working_dir, false)
 
 	case "serve":
 		port := 8000
 		dev := false
-		for i := 0; i < arg_len; i+=1 {
-			if arguments[i] == "--dev" {
+		for arg, i in arguments {
+			if arg == "--dev" {
 				dev = true
 			}
-			if arguments[i] == "--port" {
+			if arg == "--port" {
 				parsed_port, ok := strconv.parse_int(arguments[i+1], 10)
 				if (!ok) {
 					fmt.println("soma (err): Error parsing port!")
@@ -108,7 +107,7 @@ main :: proc() {
 		serve(port, dev)
 
 	case "clean":
-		clean()
+		clean(working_dir)
 
 	case:
 		fmt.print(PRINT_USAGE)
@@ -127,7 +126,6 @@ init :: proc(name: string) {
 		return
 	}
 	init_alloc := context.allocator
-	defer free_all(init_alloc)
 
 	// Scaffod directories
 	directories := []string {
@@ -199,23 +197,23 @@ _write_text_file :: proc(path: string, contents: string) {
 	Clears /build, builds html from parsed markdown files,
 	does other stuff too
 */
-build :: proc(dev_mode: bool = false) {
+build :: proc(working_dir: string, dev_mode: bool = false) {
 	build_alloc := context.allocator
-	defer free_all(build_alloc)
 
-	root_dir, _ := os.getwd(build_alloc)
-	build_dir, _ := filepath.join({root_dir, "/build"}, build_alloc)
+	build_dir, _ := filepath.join({working_dir, "/build"}, build_alloc)
 	os.remove_all(build_dir)
+	os.mkdir(build_dir)
 
-	pages := _discover_content(root_dir, build_alloc)
-    rendered_pages := _render_all(pages, build_alloc)
-    _write_all(rendered_pages, build_dir, build_alloc)
+	pages := _discover_content(working_dir, build_alloc)
+    _discover_items(&pages, build_alloc)
+    _write_all(pages, build_dir, build_alloc)
 
 	for page in pages {
 		fmt.println("----- PAGE DEBUG -----")
 		fmt.printfln("path: %s", page.file_path)
 		fmt.printfln("fm: %v", page.frontmatter)
 		fmt.printfln("content: %v", page.content)
+		fmt.printfln("pages: %v", page.items)
 	}
 }
 
@@ -223,18 +221,20 @@ build :: proc(dev_mode: bool = false) {
 	This function discovers content within the site and also validates
 	to ensure it is relevant i.e. not draft, valid frontmatter
 */
-_discover_content :: proc(root_dir: string, allocator: runtime.Allocator) -> [dynamic]Page {
+_discover_content :: proc(working_dir: string, allocator: runtime.Allocator) -> [dynamic]Page {
 	discovered := make([dynamic]Page, allocator)
 
-	w := os.walker_create_path(root_dir)
+	w := os.walker_create_path(working_dir)
 	defer os.walker_destroy(&w)
 	
+	collect_flag := false
+
 	for file in os.walker_walk(&w) {
 		if (file.type != .Regular) || (filepath.ext(file.name) != ".md") {
 			// Skip dirs & non-md files
 			continue
 		}
-		if (strings.has_prefix(file.fullpath, strings.concatenate({root_dir, "/build"}, allocator))) {
+		if (strings.has_prefix(file.fullpath, strings.concatenate({working_dir, "/build"}, allocator))) {
 			// Skip /build
 			os.walker_skip_dir(&w)
 			continue
@@ -246,18 +246,19 @@ _discover_content :: proc(root_dir: string, allocator: runtime.Allocator) -> [dy
 		}
 
 		parent_dir := filepath.dir(file.fullpath)
-		is_in_root := parent_dir == root_dir
+		is_in_root := parent_dir == working_dir
 		category := "" if is_in_root else filepath.base(parent_dir)
 
-		// Begin frontmatter & body splitting
+		// Frontmatter & body splitting
 		raw, _ := os.read_entire_file_from_path(file.fullpath, allocator)
 		content := string(raw)
 
 		// TODO(oskar): Maybe we strings.scrub here?
 		split_content := strings.split_n(content, "---", 3, allocator)
 		if len(split_content) != 3 {
-			fmt.printfln("soma (error): invalid frontmatter in `%s`",
-						 file.fullpath)
+			relative_path, error := filepath.rel(working_dir, file.fullpath, allocator)
+			fmt.printfln("soma (err): invalid frontmatter in `%s`",
+						 relative_path)
 			continue
 		}
 
@@ -272,6 +273,33 @@ _discover_content :: proc(root_dir: string, allocator: runtime.Allocator) -> [dy
 
 	return discovered
 }
+
+/*
+	Appends the appropriate items to pages that need it.
+*/
+_discover_items :: proc(pages: ^[dynamic]Page, allocator: runtime.Allocator) {
+
+	for &page in pages {
+		found := make([dynamic]Page, allocator)
+
+		if page.is_index && page.category != "" {
+			// This page needs items
+			current_cat := page.category
+
+			for candidate in pages {
+				cat_match := candidate.category == current_cat
+				not_self := candidate.file_path != page.file_path
+				if (cat_match && not_self) {
+					append(&found, candidate)
+				}
+			}
+		}
+
+		page.items = found[:]
+	}
+
+}
+
 
 _extract_frontmatter :: proc(frontmatter: string, allocator: runtime.Allocator) -> map[string]Frontmatter {
 	parsed := make(map[string]Frontmatter, allocator)
@@ -303,11 +331,16 @@ _extract_frontmatter :: proc(frontmatter: string, allocator: runtime.Allocator) 
 _parse_value :: proc(value: string, allocator: runtime.Allocator) -> Frontmatter {
     if strings.has_prefix(value, "[") {
         inner := value[1:len(value)-1]
-        items := strings.split(inner, ",", allocator)
-        for item, i in items {
-            items[i] = strings.trim_space(item)
+        parts := strings.split(inner, ",", allocator)
+		result := make([dynamic]string, 0, len(parts), allocator)
+        for part, i in parts {
+			trimmed := strings.trim_space(part)
+			if (len(trimmed) == 0) {
+				continue
+			}
+            append(&result, trimmed)
         }
-        return items
+        return result[:]
     }
 
     if value == "true" { 
@@ -333,14 +366,13 @@ _parse_value :: proc(value: string, allocator: runtime.Allocator) -> Frontmatter
 }
 
 /*
-	Takes our parsed pages and renders as HTML
+	Writes our pages to our build directory
 */
-_render_all :: proc(parsed_pages: [dynamic]Page, allocator: runtime.Allocator) -> [dynamic]Render_Context {
-	render_context := make([dynamic]Render_Context, allocator)
-
-
-
-	return render_context
+_write_all :: proc(pages: [dynamic]Page, build_dir: string, allocator: runtime.Allocator) {
+	// site/item.md 		-> site/build/item/index.html		// cat 0, root 0
+	// site/index.md 		-> site/build/index.html			// cat 0, root 1
+	// site/cat/index.md	-> site/build/cat/index.html		// cat 1, root 1
+	// site/cat/post.md		-> site/build/cat/post/index.html	// cat 1, root 0
 }
 
 _markdown_to_html :: proc(markdown_source: string, allocator: runtime.Allocator) -> string {
@@ -368,13 +400,6 @@ _md4c_callback :: proc "c" (output: cstring, size: c.uint, userdata: rawptr) {
 	strings.write_string(builder, chunk[:size])
 }
 
-_write_all :: proc(rendered_pages: [dynamic]Render_Context, build_dir: string, allocator: runtime.Allocator) {
-	// site/item.md 		-> site/build/item/index.html		// cat 0, root 0
-	// site/index.md 		-> site/build/index.html			// cat 0, root 1
-	// site/cat/index.md	-> site/build/cat/index.html		// cat 1, root 1
-	// site/cat/post.md		-> site/build/cat/post/index.html	// cat 1, root 0
-}
-
 
 /*
 	Command: serve
@@ -391,13 +416,8 @@ serve :: proc(port: int, dev: bool) {
 	Command: clean
 	Cleans the specified build directory
 */
-clean :: proc() {
-	clean_alloc := context.allocator
-	defer free_all(clean_alloc)
-
-	curr_dir, _ := os.getwd(clean_alloc)
-
-	path := strings.concatenate({curr_dir, "/build"}, clean_alloc)
+clean :: proc(working_dir: string) {
+	path := strings.concatenate({working_dir, "/build"}, context.allocator)
 
 	err := os.remove_all(path)
 	if (err != nil) {
@@ -421,8 +441,22 @@ WEEKDAY_NAMES := [7]string {
 }
 
 _parse_iso_date :: proc(text: string) -> (Date, bool) {
-	// TODO: parse "YYYY-MM-DD".
-	return Date{}, false
+	// TODO(oskar): validate month, year date etc
+	if len(text) != 10 || (strings.count(text, "-") != 2) {
+		fmt.printfln("soma (err): Error parsing iso date `%v`", text)
+		return Date{}, false
+	}
+
+	parts := strings.split_after_n(text, "-", 3, context.allocator)
+	parsed_day, _ := strconv.parse_int(parts[1], 10)
+	parsed_month, _ := strconv.parse_int(parts[2], 10)
+	parsed_year, _ := strconv.parse_int(parts[0], 10)
+
+	return Date{
+		day = cast(u16)parsed_day,
+		month = cast(u16)parsed_month,
+		year = cast(u16)parsed_year
+	}, true
 }
 
 _weekday_index :: proc(date: Date) -> u16 {
