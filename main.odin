@@ -41,6 +41,17 @@ Page :: struct {
 	items: []Page						 // category & index pages only
 }
 
+Template :: struct {
+	file_path: string,	// home/user/my-site/templates/base.html
+	name: string,		// base, default, content
+	content: string		// 
+}
+
+Build_Context :: struct {
+	build_path: string,
+	html: string
+}
+
 Frontmatter :: union {
 	string,
 	[]string,
@@ -48,6 +59,18 @@ Frontmatter :: union {
 	bool,
 	Date
 }
+
+Token_Kind :: enum {
+	Text,		// raw literal " <main>\n "
+	Variable,	// {{ title }}
+	Tag			// {% block content %} {% endblock %} {% extends "base.html" %}
+}
+
+Token :: struct {
+	type: Token_Kind,
+	content: string
+}
+
 
 Date :: struct {
 	day: u16,
@@ -204,17 +227,25 @@ build :: proc(working_dir: string, dev_mode: bool = false) {
 	os.remove_all(build_dir)
 	os.mkdir(build_dir)
 
+	templates := _discover_templates(working_dir)
 	pages := _discover_content(working_dir, build_alloc)
     _discover_items(&pages, build_alloc)
     _write_all(pages, build_dir, build_alloc)
 
-	for page in pages {
-		fmt.println("----- PAGE DEBUG -----")
-		fmt.printfln("path: %s", page.file_path)
-		fmt.printfln("fm: %v", page.frontmatter)
-		fmt.printfln("content: %v", page.content)
-		fmt.printfln("pages: %v", page.items)
+	for template in templates {
+		fmt.println("----- TEMPLATE DEBUG -----")
+		fmt.printfln("path: %s", template.file_path)
+		fmt.printfln("name: %v", template.name)
+		//fmt.printfln("content: %v", template.content)
 	}
+
+	// for page in pages {
+	// 	fmt.println("----- PAGE DEBUG -----")
+	// 	fmt.printfln("path: %s", page.file_path)
+	// 	fmt.printfln("fm: %v", page.frontmatter)
+	// 	fmt.printfln("content: %v", page.content)
+	// 	//fmt.printfln("pages: %v", page.items)
+	// }
 }
 
 /*
@@ -276,28 +307,24 @@ _discover_content :: proc(working_dir: string, allocator: runtime.Allocator) -> 
 
 /*
 	Appends the appropriate items to pages that need it.
+	These incude only pages that are both an index.md AND
+	belong to a category i.e. `blog/index.md`
 */
 _discover_items :: proc(pages: ^[dynamic]Page, allocator: runtime.Allocator) {
-
 	for &page in pages {
 		found := make([dynamic]Page, allocator)
-
 		if page.is_index && page.category != "" {
 			// This page needs items
-			current_cat := page.category
-
 			for candidate in pages {
-				cat_match := candidate.category == current_cat
+				cat_match := candidate.category == page.category
 				not_self := candidate.file_path != page.file_path
 				if (cat_match && not_self) {
 					append(&found, candidate)
 				}
 			}
 		}
-
 		page.items = found[:]
 	}
-
 }
 
 
@@ -366,13 +393,44 @@ _parse_value :: proc(value: string, allocator: runtime.Allocator) -> Frontmatter
 }
 
 /*
-	Writes our pages to our build directory
+	Writes our pages to our build directory.
 */
 _write_all :: proc(pages: [dynamic]Page, build_dir: string, allocator: runtime.Allocator) {
 	// site/item.md 		-> site/build/item/index.html		// cat 0, root 0
 	// site/index.md 		-> site/build/index.html			// cat 0, root 1
 	// site/cat/index.md	-> site/build/cat/index.html		// cat 1, root 1
 	// site/cat/post.md		-> site/build/cat/post/index.html	// cat 1, root 0
+
+	// 
+
+}
+
+/*
+	Discover site templates.
+*/
+_discover_templates :: proc(working_dir: string) -> [dynamic]Template {
+	template_dir, _ := filepath.join({working_dir, "templates"}, context.allocator)
+	templates := make([dynamic]Template, context.allocator)
+
+	w := os.walker_create_path(template_dir)
+	defer os.walker_destroy(&w)
+
+	for file in os.walker_walk(&w) {
+		if filepath.ext(file.name) != ".html" {
+			continue
+		}
+
+		raw, _ := os.read_entire_file_from_path(file.fullpath, context.allocator)
+
+		append(&templates, Template{
+			file_path = strings.clone(file.fullpath, context.allocator),
+			name = strings.clone(file.name, context.allocator),
+			content = string(raw)
+		})
+
+	}
+	
+	return templates
 }
 
 _markdown_to_html :: proc(markdown_source: string, allocator: runtime.Allocator) -> string {
