@@ -240,7 +240,7 @@ build :: proc(working_dir: string, dev_mode: bool = false) {
 		fmt.println("----- TEMPLATE DEBUG -----")
 		fmt.printfln("path: %s", template.file_path)
 		fmt.printfln("name: %v", template.name)
-		//fmt.printfln("content: %v", template.content)
+		fmt.printfln("tokens: %v", template.content)
 	}
 
 	// for page in pages {
@@ -393,6 +393,7 @@ _parse_value :: proc(value: string, allocator: runtime.Allocator) -> Frontmatter
 		return number 
 	}
 
+	// TODO(oskar): check this bit
     return strings.trim(value, "\"")
 }
 
@@ -423,7 +424,6 @@ _discover_templates :: proc(working_dir: string) -> [dynamic]Template {
 		if filepath.ext(file.name) != ".html" {
 			continue
 		}
-
 		read, _ := os.read_entire_file_from_path(file.fullpath, context.allocator)
 
 		append(&templates, Template{
@@ -431,13 +431,7 @@ _discover_templates :: proc(working_dir: string) -> [dynamic]Template {
 			name = strings.clone(file.name, context.allocator),
 			raw = string(read)
 		})
-
 	}
-	
-	// Now we tokenise
-
-
-
 	return templates
 }
 
@@ -449,59 +443,71 @@ _discover_templates :: proc(working_dir: string) -> [dynamic]Template {
 	RAW: " </h1>"
 */
 
-_template_lexer :: proc(templates: ^[dynamic]Template) -> []Token {
-	tokens := make([dynamic]Token, context.allocator)
-	cursor := 0
+_template_lexer :: proc(templates: ^[dynamic]Template) {
+	for &file in templates {
+		template := file.raw
+		tokens := make([dynamic]Token, context.allocator)
+		cursor := 0
 
-	first := templates[0]
-	template := first.raw
+		for cursor < len(template) {
+			tag_start := strings.index(template[cursor:], "{{")
+			block_start := strings.index(template[cursor:], "{%")
 
-	for cursor < len(template) {
-		tag_start := strings.index(template[cursor:], "{{")
-		block_start := strings.index(template[cursor:], "{%")
+			// No more Tags or Blocks
+			if tag_start == -1 && block_start == -1 {
+				append(&tokens, Token {
+					type = .Text,
+					content = template[cursor:]
+				})
+				break
+			}
 
-		// No more Tags or Blocks
-		if tag_start == -1 && block_start == -1 {
-			append(&tokens, Token {
-				type = .Text,
-				content = template[cursor:]
-			})
-			break
-		}
-
-		next := tag_start < block_start ? tag_start : block_start
-		fmt.printfln("next: %v", next)
-
-		content := template[cursor:cursor+next]
-
-		// If we have raw content, process it
-		if len(content) > 0 {
-			append(&tokens, Token {
-				type = .Text,
-				content =  content
-			})
-			cursor += next
-			//continue
-		} 
-
-		// Process blocks and tags
-		if template[cursor] == '{' && template[cursor+1] == '%' {
-			end := strings.index(template[cursor+1:], "%}")
-			inner := template[cursor:end]
-			append(&tokens, Token {
-				type = .Block,
-				content = inner
-			})
-		} else {
+			next := tag_start < block_start ? tag_start : block_start
 			
-		}	
-		
+			// TODO(oskar): this all looks so bad. Fix later
+			if tag_start == -1 {
+				next = block_start
+			}
+			if block_start == -1 {
+				next = tag_start
+			}
 
-		fmt.printfln(content)
-		fmt.printfln("%v", tokens)
-		return tokens[:]
+			next = next + cursor
+			content := template[cursor:next]
+
+			// If we have raw content, process it
+			if len(content) > 0 {
+				append(&tokens, Token {
+					type = .Text,
+					content =  content
+				})
+				cursor = next
+				continue
+			} 
+
+			// Process blocks and tags
+			if template[cursor] == '{' && template[cursor+1] == '%' {
+				end := strings.index(template[cursor:], "%}")
+				inner := strings.trim_space(template[cursor+2:cursor+end])
+				append(&tokens, Token {
+					type = .Block,
+					content = inner
+				})
+				cursor = cursor + end + 2
+			} else {
+				end := strings.index(template[cursor:], "}}")
+				inner := strings.trim_space(template[cursor+2:cursor+end])
+				append(&tokens, Token {
+					type = .Tag,
+					content = inner
+				})
+				cursor = cursor + end + 2
+			}
+		}
+		
+		file.content = tokens[:]
 	}
-	return tokens[:]
+
 }
 
 _markdown_to_html :: proc(markdown_source: string, allocator: runtime.Allocator) -> string {
