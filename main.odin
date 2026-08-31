@@ -42,9 +42,10 @@ Page :: struct {
 }
 
 Template :: struct {
+	name: string,		// base.html, default.html, content.html
 	file_path: string,	// home/user/my-site/templates/base.html
-	name: string,		// base, default, content
-	content: string		// 
+	raw: string,		// unprocessed content
+	content: []Token	// tokenized content
 }
 
 Build_Context :: struct {
@@ -62,8 +63,8 @@ Frontmatter :: union {
 
 Token_Kind :: enum {
 	Text,		// raw literal " <main>\n "
-	Variable,	// {{ title }}
-	Tag			// {% block content %} {% endblock %} {% extends "base.html" %}
+	Tag,		// {{ title }}
+	Block		// {% block content %} {% endblock %} {% extends "base.html" %}
 }
 
 Token :: struct {
@@ -228,8 +229,11 @@ build :: proc(working_dir: string, dev_mode: bool = false) {
 	os.mkdir(build_dir)
 
 	templates := _discover_templates(working_dir)
+	_template_lexer(&templates)
+
 	pages := _discover_content(working_dir, build_alloc)
     _discover_items(&pages, build_alloc)
+
     _write_all(pages, build_dir, build_alloc)
 
 	for template in templates {
@@ -406,7 +410,7 @@ _write_all :: proc(pages: [dynamic]Page, build_dir: string, allocator: runtime.A
 }
 
 /*
-	Discover site templates.
+	Discover site templates and tokenize.
 */
 _discover_templates :: proc(working_dir: string) -> [dynamic]Template {
 	template_dir, _ := filepath.join({working_dir, "templates"}, context.allocator)
@@ -420,17 +424,84 @@ _discover_templates :: proc(working_dir: string) -> [dynamic]Template {
 			continue
 		}
 
-		raw, _ := os.read_entire_file_from_path(file.fullpath, context.allocator)
+		read, _ := os.read_entire_file_from_path(file.fullpath, context.allocator)
 
 		append(&templates, Template{
 			file_path = strings.clone(file.fullpath, context.allocator),
 			name = strings.clone(file.name, context.allocator),
-			content = string(raw)
+			raw = string(read)
 		})
 
 	}
 	
+	// Now we tokenise
+
+
+
 	return templates
+}
+
+/*
+	Lexes the template into discrete sections the parser can use.
+	i.e. <h1> {{ heading }} </h1>
+	RAW: "<h1> "
+	VAR: "heading"
+	RAW: " </h1>"
+*/
+
+_template_lexer :: proc(templates: ^[dynamic]Template) -> []Token {
+	tokens := make([dynamic]Token, context.allocator)
+	cursor := 0
+
+	first := templates[0]
+	template := first.raw
+
+	for cursor < len(template) {
+		tag_start := strings.index(template[cursor:], "{{")
+		block_start := strings.index(template[cursor:], "{%")
+
+		// No more Tags or Blocks
+		if tag_start == -1 && block_start == -1 {
+			append(&tokens, Token {
+				type = .Text,
+				content = template[cursor:]
+			})
+			break
+		}
+
+		next := tag_start < block_start ? tag_start : block_start
+		fmt.printfln("next: %v", next)
+
+		content := template[cursor:cursor+next]
+
+		// If we have raw content, process it
+		if len(content) > 0 {
+			append(&tokens, Token {
+				type = .Text,
+				content =  content
+			})
+			cursor += next
+			//continue
+		} 
+
+		// Process blocks and tags
+		if template[cursor] == '{' && template[cursor+1] == '%' {
+			end := strings.index(template[cursor+1:], "%}")
+			inner := template[cursor:end]
+			append(&tokens, Token {
+				type = .Block,
+				content = inner
+			})
+		} else {
+			
+		}	
+		
+
+		fmt.printfln(content)
+		fmt.printfln("%v", tokens)
+		return tokens[:]
+	}
+	return tokens[:]
 }
 
 _markdown_to_html :: proc(markdown_source: string, allocator: runtime.Allocator) -> string {
