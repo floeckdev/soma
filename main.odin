@@ -4,6 +4,7 @@
 */
 
 #+vet explicit-allocators
+#+feature dynamic-literals
 
 package soma
 
@@ -32,6 +33,11 @@ foreign md4c_html {
 // TODO(oskar): check actual md4c.h for more options
 MARKDOWN_PARSER_FLAGS :: c.uint(0x0040 | 0x0004)
 
+Render_Context :: struct {
+	//templates: [dyn]
+
+}
+
 Page :: struct {
 	file_path: string, 					 // home/user/my-site/index.md		
 	category: string,  					 // projects, ""
@@ -59,7 +65,7 @@ Frontmatter :: union {
 	[]string,
 	int,
 	bool,
-	Date
+	utils.Date
 }
 
 Token_Kind :: enum {
@@ -89,10 +95,10 @@ Node :: struct {
 	children: []Node	
 }
 
-Date :: struct {
-	day: u16,
-	month: u16,
-	year: u16
+built_ins := map[string]utils.Built_In_Function {
+	"format_date" = utils.format_date,
+	"uppercase" = utils.uppercase,
+	"brief" = utils.brief
 }
 
 PRINT_USAGE :: "soma — a static site generator without the noise\n" +
@@ -248,12 +254,13 @@ build :: proc(working_dir: string, dev_mode: bool = false) {
 	templates := _discover_templates(working_dir)
 	_template_lexer(&templates)
 	parsed_templates := _parse_templates(templates)
+	
+	final_templates := _resolve_templates(parsed_templates)
+	// ^this step resolves `extends` and `include` blocks
 
 	// Process site content
 	pages := _discover_content(working_dir, build_alloc)
     _discover_items(&pages, build_alloc)
-
-    _write_all(pages, build_dir, build_alloc)
 
 	// for template in templates {
 	// 	fmt.println("----- TEMPLATE DEBUG -----")
@@ -403,7 +410,7 @@ _parse_value :: proc(value: string, allocator: runtime.Allocator) -> Frontmatter
 	}
 
     if strings.contains(value, "-") {
-        date, ok := _parse_iso_date(value)
+        date, ok := utils._parse_iso_date(value)
         if ok { 
 			return date 
 		}
@@ -414,22 +421,24 @@ _parse_value :: proc(value: string, allocator: runtime.Allocator) -> Frontmatter
 		return number 
 	}
 
-	// TODO(oskar): check this bit
     return strings.trim(value, "\"")
 }
 
 
 /*
-	Writes our pages to our build directory.
+	Resolves any possible inheritence requirements of templates.
 */
-_write_all :: proc(pages: [dynamic]Page, build_dir: string, allocator: runtime.Allocator) {
-	// site/item.md 		-> site/build/item/index.html		// cat 0, root 0
-	// site/index.md 		-> site/build/index.html			// cat 0, root 1
-	// site/cat/index.md	-> site/build/cat/index.html		// cat 1, root 1
-	// site/cat/post.md		-> site/build/cat/post/index.html	// cat 1, root 0
+_resolve_templates :: proc(templates: [dynamic]Parsed_Template) -> [dynamic]Parsed_Template {
+	resolved := make([dynamic]Parsed_Template, context.allocator)
+	
+	for template in templates {
+		
+		// we have template
+		// this template has an AST of []Nodes AND extends
 
-	// 
-
+	}
+	
+	return resolved
 }
 
 
@@ -691,67 +700,3 @@ clean :: proc(working_dir: string) {
 }
 
 
-/*
-	Date helpers
-*/
-MONTH_NAMES := [13]string {
-	"", "January", "February", "March", "April", "May", "June",
-	"July", "August", "September", "October", "November", "December",
-}
-
-WEEKDAY_NAMES := [7]string {
-	"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
-}
-
-_parse_iso_date :: proc(text: string) -> (Date, bool) {
-	// TODO(oskar): validate month, year date etc
-	if len(text) != 10 || (strings.count(text, "-") != 2) {
-		fmt.printfln("soma (err): Error parsing iso date `%v`", text)
-		return Date{}, false
-	}
-
-	parts := strings.split_after_n(text, "-", 3, context.allocator)
-	parsed_day, _ := strconv.parse_int(parts[1], 10)
-	parsed_month, _ := strconv.parse_int(parts[2], 10)
-	parsed_year, _ := strconv.parse_int(parts[0], 10)
-
-	return Date{
-		day = cast(u16)parsed_day,
-		month = cast(u16)parsed_month,
-		year = cast(u16)parsed_year
-	}, true
-}
-
-_weekday_index :: proc(date: Date) -> u16 {
-	// Sakamoto's method
-	month_offsets := [12]u16{0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4}
-	year := date.year
-	if date.month < 3 {
-		year -= 1
-	}
-	return (year + year / 4 - year / 100 + year / 400 + month_offsets[date.month - 1] + date.day) % 7
-}
-
-_ordinal_suffix :: proc(day: u16) -> string {
-	if 11 <= day && day <= 13 {
-		return "th"
-	}
-	switch day % 10 {
-	case 1:
-		return "st"
-	case 2:
-		return "nd"
-	case 3:
-		return "rd"
-	case:
-		return "th"
-	}
-}
-
-_format_date :: proc(date: Date) -> string {
-	weekday := WEEKDAY_NAMES[_weekday_index(date)]
-	month := MONTH_NAMES[date.month]
-	suffix := _ordinal_suffix(date.day)
-	// "Sunday, 19th January, 2026".
-	return fmt.tprintf("%s, %d%s %s, %d", weekday, date.day, suffix, month, date.year)
-}
