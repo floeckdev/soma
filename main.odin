@@ -45,16 +45,17 @@ Template :: struct {
 	name: string,		// base.html, default.html, content.html
 	file_path: string,	// home/user/my-site/templates/base.html
 	raw: string,		// unprocessed content
-	content: []Token	// tokenized content
+	content: []Token	// lexed content
 }
 
-Build_Context :: struct {
-	build_path: string,
-	html: string
+Parsed_Template :: struct {
+	name: string,		// default.html
+	extends: string,	// base.html
+	nodes: []Node,		// parsed AST of template
 }
 
 Frontmatter :: union {
-	string,
+	string,				// supported frontmatter types
 	[]string,
 	int,
 	bool,
@@ -72,6 +73,21 @@ Token :: struct {
 	content: string
 }
 
+Node_Kind :: enum {
+	Text,		// <h1>Heading</h1>
+	Tag,		// {{ title }}
+	For,		// {{ for item in items }}
+	If,			// {{ if dev_mode }}
+	Block,		// {% block content %}
+	Include,	// {% include "nav.html" %}
+}
+
+Node :: struct {
+	kind: Node_Kind,	// Tag
+	value: string,		// title
+	pipes: []string,	// {"upper", "truncate"}
+	children: []Node	
+}
 
 Date :: struct {
 	day: u16,
@@ -228,20 +244,23 @@ build :: proc(working_dir: string, dev_mode: bool = false) {
 	os.remove_all(build_dir)
 	os.mkdir(build_dir)
 
+	// Process templates
 	templates := _discover_templates(working_dir)
 	_template_lexer(&templates)
+	parsed_templates := _parse_templates(templates)
 
+	// Process site content
 	pages := _discover_content(working_dir, build_alloc)
     _discover_items(&pages, build_alloc)
 
     _write_all(pages, build_dir, build_alloc)
 
-	for template in templates {
-		fmt.println("----- TEMPLATE DEBUG -----")
-		fmt.printfln("path: %s", template.file_path)
-		fmt.printfln("name: %v", template.name)
-		fmt.printfln("tokens: %v", template.content)
-	}
+	// for template in templates {
+	// 	fmt.println("----- TEMPLATE DEBUG -----")
+	// 	fmt.printfln("path: %s", template.file_path)
+	// 	fmt.printfln("name: %v", template.name)
+	// 	fmt.printfln("tokens: %v", template.content)
+	// }
 
 	// for page in pages {
 	// 	fmt.println("----- PAGE DEBUG -----")
@@ -251,6 +270,7 @@ build :: proc(working_dir: string, dev_mode: bool = false) {
 	// 	//fmt.printfln("pages: %v", page.items)
 	// }
 }
+
 
 /*
 	This function discovers content within the site and also validates
@@ -309,6 +329,7 @@ _discover_content :: proc(working_dir: string, allocator: runtime.Allocator) -> 
 	return discovered
 }
 
+
 /*
 	Appends the appropriate items to pages that need it.
 	These incude only pages that are both an index.md AND
@@ -331,7 +352,6 @@ _discover_items :: proc(pages: ^[dynamic]Page, allocator: runtime.Allocator) {
 	}
 }
 
-
 _extract_frontmatter :: proc(frontmatter: string, allocator: runtime.Allocator) -> map[string]Frontmatter {
 	parsed := make(map[string]Frontmatter, allocator)
 
@@ -353,6 +373,7 @@ _extract_frontmatter :: proc(frontmatter: string, allocator: runtime.Allocator) 
 
 	return parsed
 }
+
 
 /*
 	Where an individual frontmatter item is parsed.
@@ -397,6 +418,7 @@ _parse_value :: proc(value: string, allocator: runtime.Allocator) -> Frontmatter
     return strings.trim(value, "\"")
 }
 
+
 /*
 	Writes our pages to our build directory.
 */
@@ -409,6 +431,7 @@ _write_all :: proc(pages: [dynamic]Page, build_dir: string, allocator: runtime.A
 	// 
 
 }
+
 
 /*
 	Discover site templates and tokenize.
@@ -435,6 +458,7 @@ _discover_templates :: proc(working_dir: string) -> [dynamic]Template {
 	return templates
 }
 
+
 /*
 	Lexes the template into discrete sections the parser can use.
 	i.e. <h1> {{ heading }} </h1>
@@ -442,7 +466,6 @@ _discover_templates :: proc(working_dir: string) -> [dynamic]Template {
 	VAR: "heading"
 	RAW: " </h1>"
 */
-
 _template_lexer :: proc(templates: ^[dynamic]Template) {
 	for &file in templates {
 		template := file.raw
@@ -479,7 +502,7 @@ _template_lexer :: proc(templates: ^[dynamic]Template) {
 			if len(content) > 0 {
 				append(&tokens, Token {
 					type = .Text,
-					content =  content
+					content = content
 				})
 				cursor = next
 				continue
@@ -504,10 +527,115 @@ _template_lexer :: proc(templates: ^[dynamic]Template) {
 				cursor = cursor + end + 2
 			}
 		}
-		
+
 		file.content = tokens[:]
 	}
+}
 
+
+/*
+	Parses templates lexed content into an AST.
+*/
+_parse_templates :: proc(templates: [dynamic]Template) -> [dynamic]Parsed_Template {
+	parsed := make([dynamic]Parsed_Template, context.allocator)
+	for template in templates {
+		nodes, extends_target, _ := _parse_nodes(template.content)
+		fmt.printfln("--- AST DEBUG ---")
+		fmt.printfln("name: %v", template.name)
+		fmt.printfln("extends: %v", extends_target)
+		fmt.printfln("nodes: %v", nodes)
+		append(&parsed, Parsed_Template {
+			name = template.name,
+			extends = extends_target,
+			nodes = nodes
+		})
+	}
+	return parsed
+}
+
+/*
+	Performs actual conversion of lex'ed tokens to AST.
+*/
+_parse_nodes :: proc(tokens: []Token) -> ([]Node, string, int) {
+	nodes := make([dynamic]Node, context.allocator)
+	extends_target := ""
+	cursor := 0
+
+	for cursor < len(tokens) {
+		token := tokens[cursor]
+
+		// .Text `<h1>Heading</h1>`
+		if token.type == .Text {
+			append(&nodes, Node {
+				kind = .Text,
+				value = token.content
+			})
+			cursor = cursor + 1
+			continue
+		}
+
+		// .Tag `title | upper | truncate`
+		if token.type == .Tag {
+			parts := strings.split(token.content, "|", context.allocator)
+			var := strings.trim_space(parts[0])
+
+			pipes := make([dynamic]string, 0, len(parts) - 1, context.allocator)
+			for part in parts[1:] {
+				pipe := strings.trim_space(part)
+				if len(pipe) == 0 {
+					continue
+				}
+				append(&pipes, pipe)
+			}
+
+			append(&nodes, Node {
+				kind = .Tag,
+				value = var,
+				pipes = pipes[:]
+			})
+			cursor = cursor + 1
+			continue
+		}
+
+		// .Block `for, if, extends & block`
+		// TODO(oskar): `include` in blocks
+		if token.type == .Block {
+			block_type, _, arg := strings.partition(token.content, " ")
+			block_type = strings.trim_space(block_type)
+			arg = strings.trim_space(arg)
+
+			switch block_type {
+				case "extends":
+					extends_target = strings.trim(arg, "\"")
+					cursor = cursor + 1
+				
+				case "block", "if", "for":
+					node_kind := Node_Kind.Block
+					if block_type == "if" { 
+						node_kind = .If 
+					}
+					if block_type == "for" {
+						node_kind = .For
+					}
+
+					child_nodes, _, consumed := _parse_nodes(tokens[cursor+1:])
+					append(&nodes, Node {
+						kind = node_kind,
+						value = arg,
+						children = child_nodes
+					})
+					cursor = cursor + consumed + 2
+
+				case "endblock", "endif", "endfor":
+					return nodes[:], extends_target, cursor
+					
+				case:
+					fmt.printfln("soma (warn): unknown block type `%s`", block_type)
+					cursor = cursor + 1
+			}
+		}
+	}
+	return nodes[:], extends_target, cursor
 }
 
 _markdown_to_html :: proc(markdown_source: string, allocator: runtime.Allocator) -> string {
