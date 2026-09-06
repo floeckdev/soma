@@ -16,6 +16,7 @@ import "core:c"
 import "base:runtime"
 import "utils"
 import "core:strconv"
+import "core:slice"
 
 foreign import md4c_html "system:md4c-html"
 
@@ -32,11 +33,6 @@ foreign md4c_html {
 
 // TODO(oskar): check actual md4c.h for more options
 MARKDOWN_PARSER_FLAGS :: c.uint(0x0040 | 0x0004)
-
-Render_Context :: struct {
-	//templates: [dyn]
-
-}
 
 Page :: struct {
 	file_path: string, 					 // home/user/my-site/index.md		
@@ -256,6 +252,13 @@ build :: proc(working_dir: string, dev_mode: bool = false) {
 	parsed_templates := _parse_templates(templates)
 	
 	final_templates := _resolve_templates(parsed_templates)
+
+	for x in final_templates {
+		fmt.println("----- FINAL TEST -----")
+		fmt.printfln("name: %s", x.name)
+		fmt.printfln("nodes %v", x.nodes)
+		fmt.printfln("extends: %s", x.extends)
+	}
 	// ^this step resolves `extends` and `include` blocks
 
 	// Process site content
@@ -426,23 +429,6 @@ _parse_value :: proc(value: string, allocator: runtime.Allocator) -> Frontmatter
 
 
 /*
-	Resolves any possible inheritence requirements of templates.
-*/
-_resolve_templates :: proc(templates: [dynamic]Parsed_Template) -> [dynamic]Parsed_Template {
-	resolved := make([dynamic]Parsed_Template, context.allocator)
-	
-	for template in templates {
-		
-		// we have template
-		// this template has an AST of []Nodes AND extends
-
-	}
-	
-	return resolved
-}
-
-
-/*
 	Discover site templates and tokenize.
 */
 _discover_templates :: proc(working_dir: string) -> [dynamic]Template {
@@ -549,10 +535,10 @@ _parse_templates :: proc(templates: [dynamic]Template) -> [dynamic]Parsed_Templa
 	parsed := make([dynamic]Parsed_Template, context.allocator)
 	for template in templates {
 		nodes, extends_target, _ := _parse_nodes(template.content)
-		fmt.printfln("--- AST DEBUG ---")
-		fmt.printfln("name: %v", template.name)
-		fmt.printfln("extends: %v", extends_target)
-		fmt.printfln("nodes: %v", nodes)
+		// fmt.printfln("--- AST DEBUG ---")
+		// fmt.printfln("name: %v", template.name)
+		// fmt.printfln("extends: %v", extends_target)
+		// fmt.printfln("nodes: %v", nodes)
 		append(&parsed, Parsed_Template {
 			name = template.name,
 			extends = extends_target,
@@ -645,6 +631,77 @@ _parse_nodes :: proc(tokens: []Token) -> ([]Node, string, int) {
 		}
 	}
 	return nodes[:], extends_target, cursor
+}
+
+
+/*
+	Resolves any possible inheritence requirements of templates.
+*/
+_resolve_templates :: proc(templates: [dynamic]Parsed_Template) -> [dynamic]Parsed_Template {
+	result := make([dynamic]Parsed_Template, context.allocator)
+	for template in templates {
+		resolved := _resolve_template(template, templates)
+		append(&result, resolved)
+	}
+	return result
+}
+
+_resolve_template :: proc(template: Parsed_Template, all: [dynamic]Parsed_Template) -> Parsed_Template {
+	final_nodes := make([dynamic]Node, context.allocator)
+
+	if template.extends == "" {
+		return template
+	}
+	found := -1
+	for candidate, i in all {
+		if template.extends == candidate.name {
+			found = i
+			break
+		}
+	}
+	if found == -1 {
+		fmt.printfln("soma (err): parent template '%s' not found",
+		template.extends)
+		return template
+	}
+	parent_template := all[found]
+
+	// Get blocks from child template
+	child_blocks := make(map[string][]Node, context.allocator)
+	for node, i in template.nodes {
+		if node.kind == .Block {
+			block_name := node.value
+			children := node.children
+			map_insert(&child_blocks, block_name, children)
+		}
+	}
+
+	// Replace blocks in parent template
+	for node, i in &parent_template.nodes {
+		if node.kind == .Block {
+			// If block exists in child, add
+			block_name, found := child_blocks[node.value]
+			if found {
+				for child_node in block_name {
+					append(&final_nodes, child_node)
+				}
+			} else {
+				append(&final_nodes, node)
+			}
+			
+		} else {
+			// Add regular blocks
+			append(&final_nodes, node)
+		}
+	}
+
+	//fmt.printfln("final_nodes: %v", final_nodes)		
+
+	return Parsed_Template {
+		name = template.name,
+		nodes = final_nodes[:],
+		extends = ""
+	}
 }
 
 _markdown_to_html :: proc(markdown_source: string, allocator: runtime.Allocator) -> string {
